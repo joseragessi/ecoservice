@@ -1,7 +1,8 @@
 require('dotenv').config();
 const express  = require('express');
 const twilio   = require('twilio');
-const { procesarMensaje } = require('./conversacion');
+const { procesarMensaje }     = require('./conversacion');
+const { procesarComprobante } = require('./combustible');
 
 const app  = express();
 app.use(express.urlencoded({ extended: false }));
@@ -14,13 +15,25 @@ const twilioClient = twilio(
 
 // ── Webhook de Twilio WhatsApp ────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  const telefono = req.body.From;   // ej: whatsapp:+5493516111111
+  const telefono = req.body.From;              // ej: whatsapp:+5493516111111
   const mensaje  = req.body.Body || '';
+  const numMedia = parseInt(req.body.NumMedia || '0', 10);
 
-  console.log(`[IN] ${telefono}: ${mensaje}`);
+  console.log(`[IN] ${telefono}: ${numMedia > 0 ? `[${numMedia} imagen(es)]` : mensaje}`);
 
   try {
-    const respuesta = await procesarMensaje(telefono, mensaje);
+    let respuesta;
+
+    if (numMedia > 0) {
+      // Llegó una foto → flujo de combustible (remito o factura)
+      const mediaUrl  = req.body.MediaUrl0;
+      const mediaType = req.body.MediaContentType0;
+      respuesta = await procesarComprobante(telefono, mediaUrl, mediaType);
+    } else {
+      // Texto → flujo de incidencias (el de siempre, sin cambios)
+      respuesta = await procesarMensaje(telefono, mensaje);
+    }
+
     console.log(`[OUT] ${telefono}: ${respuesta.slice(0, 80)}...`);
 
     await twilioClient.messages.create({
