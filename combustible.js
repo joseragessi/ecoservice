@@ -1,4 +1,5 @@
 const supabase = require('./supabase');
+const { extraerComprobante } = require('./extraccion');
 
 /**
  * Descarga la imagen del comprobante desde Twilio.
@@ -25,14 +26,21 @@ async function descargarImagen(mediaUrl) {
 }
 
 /**
+ * Formatea un número al estilo argentino ($ 147.141,40) para mostrar al capataz.
+ */
+function pesos(n) {
+  if (n == null) return '—';
+  return '$' + n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
  * Punto de entrada del flujo de combustible: el capataz mandó una foto
  * de un remito o de una factura de carga.
  *
- * PASO 1 (este archivo): identifica al capataz, valida y descarga la
- * imagen, y confirma la recepción.
- * PASO 2 (siguiente): mandar la imagen a la API de Claude para extraer
- * los datos, resolver la unidad por patente y crear la fila en
- * cargas_combustible.
+ * PASO 2 (este archivo): descarga la imagen, la manda a Claude para
+ * extraer los datos, y le confirma al capataz lo que se leyó.
+ * PASO 3 (siguiente): resolver la unidad por patente contra el maestro
+ * y crear la fila en cargas_combustible + sus items.
  *
  * @param {string} telefono   - formato whatsapp:+549351...
  * @param {string} mediaUrl   - URL de la imagen en Twilio
@@ -72,11 +80,39 @@ async function procesarComprobante(telefono, mediaUrl, mediaType) {
 
   console.log(`[COMBUSTIBLE] ${capataz.nombre}: imagen de ${imagen.length} bytes (${mediaType})`);
 
-  // PASO 1: solo confirmamos la recepción.
-  // (En el paso siguiente reemplazamos esto por: extracción con Claude +
-  //  alta en cargas_combustible.)
-  return `📸 Recibí tu comprobante, *${nombre}*.\n` +
-         `Lo estoy procesando para registrar la carga de combustible…`;
+  // Extraer los datos con Claude
+  let datos;
+  try {
+    datos = await extraerComprobante(imagen, mediaType);
+  } catch (err) {
+    console.error('Error extrayendo comprobante:', err);
+    return '⚠️ Recibí la foto pero no pude leer bien los datos. ¿Podés sacarla más nítida y mandarla de nuevo?';
+  }
+
+  console.log('[COMBUSTIBLE] extraído:', JSON.stringify(datos));
+
+  // Armar el resumen de lo leído para confirmarle al capataz
+  const litros = (datos.items || [])
+    .filter(i => i.es_combustible)
+    .reduce((s, i) => s + (i.litros || 0), 0);
+
+  const productos = (datos.items || [])
+    .map(i => `  • ${i.producto}: ${i.litros ?? '—'} lt`)
+    .join('\n');
+
+  const cabecera = datos.tipo_doc === 'factura'
+    ? `📄 Factura ${datos.numero} — ${pesos(datos.total)}`
+    : `📄 Remito ${datos.numero} — sin facturar`;
+
+  return `📸 Leí tu comprobante, *${nombre}*:\n\n` +
+         `⛽ ${datos.proveedor}\n` +
+         `🚗 Patente: ${datos.patente || '—'}\n` +
+         `${cabecera}\n` +
+         `${productos}\n` +
+         `Total combustible: ${litros.toFixed(2)} lt\n\n` +
+         `_La carga se está registrando…_`;
+  // NOTA paso 3: acá va el match de patente -> unidad_id y el INSERT
+  //             en cargas_combustible + cargas_combustible_items.
 }
 
 module.exports = { procesarComprobante };
